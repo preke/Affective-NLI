@@ -1,3 +1,1 @@
-# Affective-NLI
-
-Raw code and data, still organizing...
+# Personality-Analysis

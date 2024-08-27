@@ -10,7 +10,7 @@ from transformers import BertTokenizer, BertConfig, BertForSequenceClassificatio
 
 from data_loader import load_data
 from train import train_model, eval_model
-# from model import HADE
+from model import HADE
 from transformers import RobertaConfig, RobertaModel, RobertaTokenizer, RobertaForSequenceClassification
 import time
 
@@ -19,7 +19,7 @@ import time
 parser = argparse.ArgumentParser(description='')
 args   = parser.parse_args()
 
-args.device        = 0
+args.device        = 2
 args.MAX_LEN       = 256
 args.adam_epsilon  = 1e-6
 args.num_class     = 2
@@ -42,23 +42,18 @@ HADE-> HADE
 '''
 
 
-args.mode         = 'Uttr'
-# args.mode         = 'Full_dialog'
+args.mode         = 'HADE'
+# args.mode         = 'Uttr'
 # args.mode         = 'Context_Hierarchical_affective'
 args.BASE         = 'RoBERTa'
 # args.BASE         = 'BERT'
 args.VAD_tokenized_dict = '../VAD_tokenized_dict.json'
 
-# args.data = 'Friends_Persona'
-args.data = 'CPED'
+args.data = 'Friends_Persona'
+# args.data = 'CPED'
 # args.data = 'PELD'
-hade_mode = 'Full'
 
-
-# args.result_name  = args.data + '_' + args.mode + '_large.txt' 
-
-dialog_flow_len = '0.25' # '0.5', '0.75'
-args.result_name  = args.data + '_' + args.mode + '_large_'+hade_mode+'_'+dialog_flow_len+'.txt' 
+args.result_name  = args.data + '_' + args.mode + '_large_HADE_emo.txt' 
 
 
 
@@ -82,7 +77,7 @@ args.lr = 1e-4
 
 cnt = 0
 
-seeds = [0]#[321, 42, 1024, 0, 1, 13, 41, 123, 456, 999] # 
+seeds = [0] #[321, 42, 1024, 0, 1, 13, 41, 123, 456, 999] # 
 
 if args.data == 'Friends_Persona' or args.data == 'CPED':
     personalities = ['A', 'C', 'E', 'O', 'N']
@@ -100,15 +95,13 @@ with open(args.result_name, 'w') as f:
         args.epochs = epoch_list[0]
         cnt += 1
         if args.data == 'Friends_Persona':
-            df = pd.read_csv('../data/Friends_'+personality+'_vad_'+dialog_flow_len+'.tsv', sep='\t')
-#             df = pd.read_csv('../data/Friends_'+personality+'_vad.tsv', sep='\t')
+            df = pd.read_csv('../data/Friends_'+personality+'_vad.tsv', sep='\t')
         elif args.data == 'CPED':
-            df = pd.read_csv('../data/CPED_'+personality+'_VAD_'+dialog_flow_len+'.tsv', sep='\t')
-#             df = pd.read_csv('../data/CPED_'+personality+'_VAD.tsv', sep='\t')
+            df = pd.read_csv('../data/CPED_'+personality+'_VAD.tsv', sep='\t')
         else:
             df = pd.read_csv('../data/PELD_'+personality+'.tsv', sep='\t')
         print('Current training classifier for', personality, '...')
-        print(df.shape)
+
         test_acc_all_seeds = []
         test_f1_all_seeds = []
         for seed in seeds:
@@ -117,7 +110,7 @@ with open(args.result_name, 'w') as f:
             torch.manual_seed(args.SEED)
             torch.cuda.manual_seed_all(args.SEED)
 
-            args.model_path  = './model/' + args.mode + '_' + str(args.MAX_LEN) + '_' + args.BASE + '_'+ str(args.lr) +'_' + '_batch_' \
+            args.model_path  = './model/' + args.mode + '_^_' + str(args.MAX_LEN) + '_' + args.BASE + '_'+ str(args.lr) +'_' + '_batch_' \
                                 + str(args.batch_size) + '_personality_' + personality + '_seed_' + str(seed) +'_epoch_' + str(args.epochs) + '/'
 
             train_dataloader, valid_dataloader, test_dataloader, train_length = load_data(df, args, tokenizer, personality)
@@ -146,7 +139,7 @@ with open(args.result_name, 'w') as f:
 
             print('Training Length is:', len(train_dataloader))
             starttime = datetime.datetime.now()
-            # training_loss, best_eval_acc = train_model(model, args, train_dataloader, valid_dataloader, train_length)
+            training_loss, best_eval_acc = train_model(model, args, train_dataloader, valid_dataloader, train_length)
             endtime = datetime.datetime.now()
             print('Training time for ', personality, ' is: ', (endtime - starttime))
             

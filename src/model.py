@@ -51,32 +51,49 @@ class Context_Encoder(nn.Module):
         self.pad_size    = args.MAX_NUM_UTTR
         self.num_head    = 1
         self.dim_model   = args.d_transformer
+        self.num_encoder = 1
         self.num_classes = args.num_class
         self.device      = args.device
-        self.hidden      = 32
+        self.hidden      = 512 # 256
 
-        self.position_embedding     = Positional_Encoding(embed=7, pad_size=self.pad_size, device=self.device)
-        self.semantic_encoder       = Encoder(dim_model=7, num_head=self.num_head, hidden=self.hidden)
-        self.fc1 = nn.Linear(7, self.num_classes)
+        self.position_embedding     = Positional_Encoding(embed=self.dim_model, pad_size=self.pad_size, device=self.device)
+        self.dialog_state_embedding = Dialog_State_Encoding(embed=self.dim_model, pad_size=self.pad_size, device=self.device)
+        self.semantic_encoder       = Encoder(dim_model=self.dim_model, num_head=self.num_head, hidden=self.hidden)
+        if args.mode == 'Context_Hierarchical_affective':
+            self.affective_encoder      = Encoder(dim_model=self.dim_model, num_head=self.num_head, hidden=self.hidden)
+            self.fc1 = nn.Linear(self.dim_model*2, self.num_classes)
+        else:
+            self.fc1 = nn.Linear(self.dim_model, self.num_classes)
         
-    def forward(self, emo_embedding, dialog_states, args):
+    def forward(self, x, dialog_states, context_vad, d_transformer, args):
+        # Semantic Aspect:
+        semantic_out   = x.view(-1, self.pad_size, self.dim_model)
+        semantic_out   = self.position_embedding(semantic_out) 
+        semantic_out   = self.semantic_encoder(semantic_out, dialog_states)
 
-        emo_embedding = self.position_embedding(emo_embedding) 
-        emo_embedding = self.semantic_encoder(emo_embedding, dialog_states)
+        if args.mode == 'Context_Hierarchical_affective':
+            # Affective aspect:
+            affective_out  = x.view(-1, self.pad_size, self.dim_model)
+            affective_out  = self.position_embedding(affective_out)
+            affective_out  = self.affective_encoder(affective_out, dialog_states)
 
         zero           = torch.zeros_like(dialog_states)
         dialog_states  = torch.where(dialog_states<0, zero, dialog_states)
-
         speaker_length = torch.sum(dialog_states, dim=1)
         dialog_states  = torch.div(dialog_states, speaker_length.unsqueeze(1))
         
-#         print(dialog_states)
-
-        emo_logits   = torch.mul(emo_embedding, dialog_states.unsqueeze(2))
-        emo_logits   = torch.sum(emo_logits, dim=1)
-
-        emo_logits = self.fc1(emo_logits)
-        return emo_logits
+        semantic_out   = torch.mul(semantic_out, dialog_states.unsqueeze(2))
+        semantic_out   = torch.sum(semantic_out, dim=1)
+        if args.mode == 'Context_Hierarchical_affective':
+            # affective_out  = torch.mul(affective_out, dialog_states.unsqueeze(2))
+            # affective_out  = torch.sum(affective_out, dim=1)
+            affective_out  = torch.mean(affective_out, dim=1)
+        
+            out = torch.cat([semantic_out, affective_out], dim=1)
+        else:
+            out = semantic_out
+        out = self.fc1(out)
+        return out
 
 
 class Scaled_Dot_Product_Attention(nn.Module):
@@ -136,39 +153,97 @@ class Multi_Head_Attention(nn.Module):
         out = self.layer_norm(out)
         return out
 
-class HADE(RobertaPreTrainedModel):
+
+
+class DialogVAD(BertPreTrainedModel):
+    
     def __init__(self, config, args):
         super().__init__(config)
         self.args            = args
         self.num_labels      = args.num_class
-        self.config           = config
-        self.roberta         = RobertaModel(config, add_pooling_layer=True)
-        
-        self.uttr_cls = nn.Linear(config.hidden_size, 2)
+        self.d_transformer   = args.d_transformer
+        self.config          = config
+        self.bert            = BertModel(config)
+        self.reduce_size     = nn.Linear(config.hidden_size, self.d_transformer) 
+        self.vad_to_hidden = nn.Linear(3, self.d_transformer)
 
-        self.emotion_encoder = Context_Encoder(args)
-        self.sm = nn.Softmax(dim=1)
-
+        self.context_encoder = Context_Encoder(args)
+        self.emo_cls     = nn.Linear(config.hidden_size, 7) 
         self.init_weights()
     
-    def forward(self, 
-                uttr, uttr_mask, 
-                personality_scores_vad,
-                dialog_state, emo_embedding):  
+    def forward(self, context, context_mask, dialog_states, context_vad):  
         
-        # print(emo_distribution.shape) # 16 * 20 * 7
-
-        uttr_outputs  = self.roberta(uttr, uttr_mask)[1] 
-
-
-        uttr_logits = self.uttr_cls(uttr_outputs)
-        vad_logits = personality_scores_vad
-        emo_logits = self.emotion_encoder(emo_embedding, dialog_state, self.args) # [batch_size * 2]
+        batch_size, max_ctx_len, max_utt_len = context.size() # 16 * 30 * 32
         
-        # print(uttr_logits.shape)
-        # print(vad_logits.shape)
-        # print(emo_logits.shape)
+        context_utts = context.view(max_ctx_len, batch_size, max_utt_len)    
+        context_mask = context_mask.view(max_ctx_len, batch_size, max_utt_len)   
 
-        logits = self.sm(uttr_logits)  + self.sm(vad_logits) + self.sm(emo_logits)
-#         logits = self.sm(emo_logits)# self.sm(uttr_logits)
+        uttr_outputs  = [self.bert(uttr, uttr_mask) for uttr, uttr_mask in zip(context_utts,context_mask)]
+
+        uttr_outputs  = [self.reduce_size(uttr_output[1]) for uttr_output in uttr_outputs] 
+        uttr_embeddings = torch.stack(uttr_outputs) # 30 * 16 * 768
+        uttr_embeddings = torch.autograd.Variable(uttr_embeddings.view(batch_size, max_ctx_len, self.d_transformer), requires_grad=True)
+
+        if self.args.mode == 'Context_Hierarchical_affective':
+            context_vad = context_vad.view(max_ctx_len, batch_size, 3)
+            context_vad = [self.vad_to_hidden(uttr_vad) for uttr_vad in context_vad]
+            context_vad = torch.stack(context_vad)
+            context_vad = torch.autograd.Variable(context_vad.view(batch_size, max_ctx_len, self.d_transformer), requires_grad=True)
+        else:
+            context_vad = 0
+        
+        # ---- concat with transformer to do the self-attention
+        logits = self.context_encoder(uttr_embeddings, dialog_states, context_vad, self.d_transformer, self.args) # [batch_size * 2]
+
         return logits
+
+
+
+class DialogVAD_roberta(RobertaPreTrainedModel):
+    
+    def __init__(self, config, args):
+        super().__init__(config)
+        self.args            = args
+        self.num_labels      = args.num_class
+        self.d_transformer   = args.d_transformer
+        self.config          = config
+        self.roberta         = RobertaModel(config, add_pooling_layer=True)
+        self.reduce_size     = nn.Linear(config.hidden_size, self.d_transformer) 
+        self.vad_to_hidden = nn.Linear(3, self.d_transformer)
+
+        self.context_encoder = Context_Encoder(args)
+        self.emo_cls     = nn.Linear(config.hidden_size, 7) 
+        self.init_weights()
+    
+    def forward(self, context, context_mask, dialog_states, context_vad):  
+        
+        batch_size, max_ctx_len, max_utt_len = context.size() # 16 * 30 * 32
+        
+
+        context_utts = context.view(max_ctx_len, batch_size, max_utt_len)    
+        context_mask = context_mask.view(max_ctx_len, batch_size, max_utt_len)   
+
+        uttr_outputs  = [self.roberta(uttr, uttr_mask) for uttr, uttr_mask in zip(context_utts,context_mask)]
+
+
+        uttr_outputs  = [self.reduce_size(uttr_output[1]) for uttr_output in uttr_outputs] 
+        uttr_embeddings = torch.stack(uttr_outputs) # 30 * 16 * 768
+        uttr_embeddings = torch.autograd.Variable(uttr_embeddings.view(batch_size, max_ctx_len, self.d_transformer), requires_grad=True)
+
+        if self.args.mode == 'Context_Hierarchical_affective':
+            context_vad = context_vad.view(max_ctx_len, batch_size, 3)
+            context_vad = [self.vad_to_hidden(uttr_vad) for uttr_vad in context_vad]
+            context_vad = torch.stack(context_vad)
+            context_vad = torch.autograd.Variable(context_vad.view(batch_size, max_ctx_len, self.d_transformer), requires_grad=True)
+        else:
+            context_vad = 0
+        
+        
+
+
+        # ---- concat with transformer to do the self-attention
+        logits = self.context_encoder(uttr_embeddings, dialog_states, context_vad, self.d_transformer, self.args) # [batch_size * 2]
+
+        return logits
+
+    

@@ -103,7 +103,7 @@ def train_model(model, args, train_dataloader, valid_dataloader, train_length):
 
             # Validation
             # Put model in evaluation mode to evaluate loss on the validation set
-            if step%5 == 0:
+            if step%1 == 0:
                 args.print_eval = False
                 eval_acc, eval_f1 = eval_model(model, args, valid_dataloader)
                 if eval_f1 > best_eval_f1:
