@@ -123,7 +123,7 @@ if __name__ == '__main__':
     
     for SEED in SEED_list:
         input_sent = 'affective_dialog' # origin_sent
-        template_text = '{"placeholder":"text_a"} ; {"placeholder":"text_b"}? Is it correct? {"mask"}.'
+        template_text = '{"placeholder":"text_a"} ; {"placeholder":"text_b"}; Is it correct? {"mask"}.'
 
         model_name = "roberta-base"
         max_seq_length = 256
