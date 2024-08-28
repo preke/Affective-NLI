@@ -1,0 +1,5 @@
+Dialog length is 1
+Personality A
+Test acc is: 0.4861111111111111
+******************
+Personality C
